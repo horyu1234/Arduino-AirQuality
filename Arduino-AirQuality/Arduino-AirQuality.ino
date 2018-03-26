@@ -1,76 +1,144 @@
 /**
- * Created by horyu1234 on 2017-05-20.
+ * Created by horyu1234 on 2017-10-10.
  * 제작: horyu1234
  * 
  * 참고한 자료
  * MQ135: https://github.com/ViliusKraujutis/MQ135/tree/fb1bed6fff7418777930cdf8173bb6fb5c7e70a9
- * GP2Y1014AU0F: https://github.com/Trefex/arduino-airquality/blob/master/Module_Dust-Sensor/dustSensor/dustSensor.ino
  * DHT22: https://github.com/adafruit/DHT-sensor-library
  */
+#include <ESP8266WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
-#include "MQ135.h"
 #include "DHT.h"
+#include "MQ135.h"
 
-#define MQ135_DATA_PIN A5 // Analog
-#define GP2Y1014AU0F_DATA_PIN 0 // Analog
-#define GP2Y1014AU0F_LED_PIN 2 // Digital
-#define DHT22_DATA_PIN 7 // Digital
+#define DEBUG_NTPClient
 
-#define GP2Y1014AU0F_SAMPLING_TIME 280
-#define GP2Y1014AU0F_DELTA_TIME 40
-#define GP2Y1014AU0F_SLEEP_TIME 9680
+#define DHT_DATA_PIN 2 // Digital
+#define DHT_TYPE DHT22
+
+#define MQ135_DATA_PIN 0 // Analog
 
 #define SERIAL_DATA_SPLIT_CHAR "-"
 
-#define LOOP_DELAY 1000
+#define LOOP_DELAY 5000
 
-DHT dht;
+const char* ssid     = "<WiFi SSID>";
+const char* password = "<WiFi Password>";
+
+const char* host = "<Server Host>";
+const char* path = "<Server Path>";
+const int port = 9100;
+
+const char* id = "<Sensor Id>";
+const char* privateKey = "<Server Private Key>";
+
+const char* timeServer = "time.google.com";
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, timeServer, 0, 60000);
+
+DHT dht(DHT_DATA_PIN, DHT_TYPE);
 MQ135 mq135 = MQ135(MQ135_DATA_PIN);
 
-float correctedPPM;
-float calcVoltage;
-float dustDensity;
+float currentTime;
 float humidity;
 float temperature;
+float correctedPPM;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
-  initPins();
-  initSensors();
+  connectWiFi();
+
+  timeClient.begin();
 }
 
-void initPins() {
-  pinMode(GP2Y1014AU0F_LED_PIN, OUTPUT);
-}
+void connectWiFi() {
+  WiFi.disconnect();
 
-void initSensors() {
-  dht.setup(DHT22_DATA_PIN);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.print("Try to connect WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void loop() {
-  getGP2Y1014AU0FData();
-  getDHT22Data();
-  getMQ135Data();
+  timeClient.update();
 
-  sendDataToSerial();
+  Serial.print("[");
+  Serial.print(timeClient.getEpochTime());
+  Serial.print("] ");
+
+  getDHT22Data();
+  getAirQualityData();
+
+  sendDataToServer();
 
   delay(LOOP_DELAY);
 }
 
-void sendDataToSerial() {
-  Serial.print(calcVoltage);
-  Serial.print(SERIAL_DATA_SPLIT_CHAR);
-  Serial.print(dustDensity);
-  Serial.print(SERIAL_DATA_SPLIT_CHAR);
-  Serial.print(humidity, 1);
-  Serial.print(SERIAL_DATA_SPLIT_CHAR);
-  Serial.print(temperature, 1);
-  Serial.print(SERIAL_DATA_SPLIT_CHAR);
-  Serial.println(correctedPPM);
+void sendDataToServer() {
+  Serial.print("Send data to server...");
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.print("WiFi connection lost, try again...");
+    connectWiFi();
+    return;
+  }
+
+  WiFiClient client;
+  if (!client.connect(host, port)) {
+    Serial.println("Connection failed!");
+    return;
+  }
+
+  String dataUrl = path;
+  dataUrl += "?time=" + String(timeClient.getEpochTime());
+  dataUrl += "&humidity=" + String(humidity);
+  dataUrl += "&temperature=" + String(temperature);
+  dataUrl += "&airQuality=" + String(correctedPPM);
+  dataUrl += "&id=" + String(id);
+  dataUrl += "&privateKey=" + String(privateKey);
+
+  // This will send the request to the server
+  client.print(String("GET ") + dataUrl + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\n" +
+               "Connection: close\r\n\r\n");
+
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 5000) {
+      Serial.println(">>> Client Timeout !");
+      client.stop();
+      return;
+    }
+  }
+
+  // Read all the lines of the reply from server and print them to Serial
+  while (client.available()) {
+    client.readStringUntil('\r');
+  }
+
+  Serial.println("success");
 }
 
-void getMQ135Data() {
+void getDHT22Data() {
+  humidity = dht.readHumidity();
+  temperature = dht.readTemperature();
+}
+
+void getAirQualityData() {
   float rzero = mq135.getRZero();
   float correctedRZero = mq135.getCorrectedRZero(temperature, humidity);
   float resistance = mq135.getResistance();
@@ -78,28 +146,3 @@ void getMQ135Data() {
   correctedPPM = mq135.getCorrectedPPM(temperature, humidity);
 }
 
-void getGP2Y1014AU0FData() {
-  digitalWrite(GP2Y1014AU0F_LED_PIN, LOW); // power on the LED
-  delayMicroseconds(GP2Y1014AU0F_SAMPLING_TIME);
-
-  float voMeasured = analogRead(GP2Y1014AU0F_DATA_PIN); // read the dust value
-
-  delayMicroseconds(GP2Y1014AU0F_DELTA_TIME);
-  digitalWrite(GP2Y1014AU0F_LED_PIN, HIGH); // turn the LED off
-  delayMicroseconds(GP2Y1014AU0F_SLEEP_TIME);
-
-  // 0 - 5.0V mapped to 0 - 1023 integer values
-  calcVoltage = voMeasured * (5.0 / 1024);
-
-  // linear eqaution taken from http://www.howmuchsnow.com/arduino/airquality/
-  // Chris Nafis (c) 2012
-  dustDensity = (0.17 * calcVoltage - 0.1) * 1000;
-  if (dustDensity < 0) {
-    dustDensity = 0;
-  }
-}
-
-void getDHT22Data() {
-  humidity = dht.getHumidity();
-  temperature = dht.getTemperature();
-}
