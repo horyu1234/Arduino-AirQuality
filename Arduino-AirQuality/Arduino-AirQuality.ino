@@ -74,23 +74,20 @@ void connectWiFi() {
 }
 
 void loop() {
+  String messagePrefix = "[" + String(timeClient.getEpochTime()) + "] ";
   timeClient.update();
 
-  Serial.print("[");
-  Serial.print(timeClient.getEpochTime());
-  Serial.print("] ");
-
+  Serial.println(messagePrefix + "Fetching sensor data...");
   getDHT22Data();
   getAirQualityData();
 
+  Serial.print(messagePrefix + "Sending data to server...");
   sendDataToServer();
 
   delay(LOOP_DELAY);
 }
 
 void sendDataToServer() {
-  Serial.print("Send data to server...");
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.print("WiFi connection lost, try again...");
     connectWiFi();
@@ -145,4 +142,3 @@ void getAirQualityData() {
   float ppm = mq135.getPPM();
   correctedPPM = mq135.getCorrectedPPM(temperature, humidity);
 }
-
