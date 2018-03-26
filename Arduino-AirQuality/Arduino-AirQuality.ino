@@ -122,11 +122,7 @@ void sendDataToServer() {
     }
   }
 
-  // Read all the lines of the reply from server and print them to Serial
-  while (client.available()) {
-    client.readStringUntil('\r');
-  }
-
+  client.flush();
   Serial.println("success");
 }
 
